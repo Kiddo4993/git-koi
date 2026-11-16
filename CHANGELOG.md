@@ -6,6 +6,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The Action runs on Windows runners, downloading and checking the release's
+  `.zip` (#36).
+
 ### Changed
 
 - `git-koi render` prints nothing when it succeeds. The line it printed named
