@@ -70,10 +70,8 @@ fn render_writes_the_days_loop_still_and_preview_as_the_renderer_draws_them() {
     assert!(preview_html.contains(r#"src="koi.gif""#));
     assert!(preview_html.contains(r#"src="koi.png""#));
     assert!(!preview_html.contains("<script"));
-    let summary_line = String::from_utf8_lossy(&command_output.stdout);
-    let observation_date = koi_development.observed_on.to_string();
-    assert!(summary_line.contains(&observation_date));
-    assert!(preview_html.contains(&observation_date));
+    assert!(preview_html.contains(&koi_development.observed_on.to_string()));
+    assert!(command_output.stdout.is_empty());
 }
 
 #[test]
@@ -98,7 +96,8 @@ fn the_body_option_redraws_the_koi_in_that_body() {
         fs::read(output_directory.join("koi.png")).unwrap(),
         black_png
     );
-    assert!(String::from_utf8_lossy(&command_output.stdout).contains("black body"));
+    let preview_html = fs::read_to_string(output_directory.join("preview.html")).unwrap();
+    assert!(preview_html.contains("black body"));
 }
 
 #[test]
@@ -143,7 +142,7 @@ fn the_size_and_scale_options_draw_the_days_pond_in_any_order() {
     );
     let preview_html = fs::read_to_string(output_directory.join("preview.html")).unwrap();
     assert!(preview_html.contains(r#"width="300" height="256""#));
-    assert!(String::from_utf8_lossy(&command_output.stdout).contains("asagi body, 300x256 pond"));
+    assert!(preview_html.contains("asagi body, 300x256 pond"));
 }
 
 #[test]

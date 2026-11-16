@@ -18,7 +18,12 @@ use git_koi::output::{
 use git_koi::pond::PondSize;
 use git_koi::render::{KoiFrame, SwimLoop, render_koi_in};
 
-const USAGE: &str = "Usage: git-koi collect LOGIN [--output FILE]
+/// The command's usage, listing the bodies from [`BODY_NAMES`] so the help names every
+/// body the parser accepts, and the pond and scale limits from their definitions.
+fn build_usage_text() -> String {
+    let body_names = list_body_names();
+    format!(
+        "Usage: git-koi collect LOGIN [--output FILE]
        git-koi render SNAPSHOT --output-dir DIR [--body BODY] [--size WxH] [--scale N]
        git-koi --help | --version
 Collect LOGIN's public GitHub snapshot as JSON through `gh api`: public owned and
@@ -28,17 +33,22 @@ Writes to standard output, or replaces FILE only after collection succeeds.
 Requires an authenticated GitHub CLI; in GitHub Actions, set GH_TOKEN to github.token.
 Render a collected SNAPSHOT into DIR: koi.gif swims the behavior chosen for its
 observation date, koi.png is the still koi, and preview.html shows both on light and
-dark backgrounds. BODY is white (the default), black, asagi, tea, gold, or platinum.
-The pond is 256x256 native pixels unless --size gives another, each side from 256
-through 4096; in a pond that is not square the koi swims a new track each day, and a
-longer track makes a longer loop. Each native pixel becomes N pixels on each side, 2
-unless --scale gives 1 through 4. A GIF's weight grows with its area and length, and
+dark backgrounds. BODY is {body_names}.
+The pond is {default_pond_size} native pixels unless --size gives another, each side from {min_side_pixels}
+through {max_side_pixels}; in a pond that is not square the koi swims a new track each day, and a
+longer track makes a longer loop. Each native pixel becomes N pixels on each side, {STATIC_EXPORT_SCALE}
+unless --scale gives 1 through {MAX_EXPORT_SCALE}. A GIF's weight grows with its area and length, and
 phones may not play a heavy one: for a wide pond, try --size 768x256 --scale 1.
 The options may come in any order. The files are replaced only after all of them render.
-Errors go to stderr and exit 1; invalid usage exits 2.
+Render prints nothing on success; errors go to stderr and exit 1; invalid usage exits 2.
 Examples: git-koi collect octocat --output snapshot.json
           git-koi render snapshot.json --output-dir koi --body asagi
-          git-koi render snapshot.json --output-dir koi --size 768x256 --scale 1";
+          git-koi render snapshot.json --output-dir koi --size 768x256 --scale 1",
+        default_pond_size = PondSize::default(),
+        min_side_pixels = PondSize::MIN_SIDE_PIXELS,
+        max_side_pixels = PondSize::MAX_SIDE_PIXELS,
+    )
+}
 
 /// Each body's name on the command line.
 const BODY_NAMES: [(&str, KoiBody); 6] = [
@@ -50,6 +60,24 @@ const BODY_NAMES: [(&str, KoiBody); 6] = [
     ("platinum", KoiBody::Platinum),
 ];
 
+/// The body names in table order, the default marked and the last joined with "or".
+fn list_body_names() -> String {
+    let listed_names: Vec<String> = BODY_NAMES
+        .iter()
+        .map(|(body_name, koi_body)| {
+            if *koi_body == KoiBody::default() {
+                format!("{body_name} (the default)")
+            } else {
+                (*body_name).to_owned()
+            }
+        })
+        .collect();
+    let (last_name, leading_names) = listed_names
+        .split_last()
+        .expect("the table names at least one body");
+    format!("{}, or {last_name}", leading_names.join(", "))
+}
+
 fn main() -> ExitCode {
     let program_arguments: Vec<OsString> = env::args_os().skip(1).collect();
     let argument_texts: Vec<Option<&str>> = program_arguments
@@ -58,7 +86,7 @@ fn main() -> ExitCode {
         .collect();
     match argument_texts.as_slice() {
         [Some("--help")] | [Some("collect" | "render"), Some("--help")] => {
-            println!("{USAGE}");
+            println!("{}", build_usage_text());
             ExitCode::SUCCESS
         }
         [Some("--version")] => {
@@ -80,7 +108,7 @@ fn main() -> ExitCode {
 }
 
 fn exit_with_usage() -> ExitCode {
-    eprintln!("{USAGE}");
+    eprintln!("{}", build_usage_text());
     ExitCode::from(2)
 }
 
@@ -148,20 +176,12 @@ fn run_collect(login: &str, output_path: Option<&Path>) -> ExitCode {
 
 fn run_render(snapshot_path: &Path, render_options: RenderOptions) -> ExitCode {
     let output_directory = render_options.output_directory;
-    let render_result = render_day(snapshot_path, &render_options).and_then(|rendered_day| {
+    let render_result = render_day(snapshot_path, &render_options).and_then(|output_files| {
         fs::create_dir_all(output_directory)
             .map_err(|create_error| format!("{}: {create_error}", output_directory.display()))?;
-        let mut written_paths = Vec::new();
-        for (file_name, file_bytes) in rendered_day.output_files {
-            let output_path = output_directory.join(file_name);
-            replace_file(&output_path, &file_bytes)?;
-            written_paths.push(output_path.display().to_string());
+        for (file_name, file_bytes) in output_files {
+            replace_file(&output_directory.join(file_name), &file_bytes)?;
         }
-        println!(
-            "{}: wrote {}",
-            rendered_day.caption,
-            written_paths.join(", ")
-        );
         Ok(())
     });
     match render_result {
@@ -173,15 +193,13 @@ fn run_render(snapshot_path: &Path, render_options: RenderOptions) -> ExitCode {
     }
 }
 
-/// The day's files, by name, with a caption naming the behavior, observation date, body,
-/// and any pond that is not the default.
-struct RenderedDay {
-    caption: String,
-    output_files: [(&'static str, Vec<u8>); 3],
-}
-
-/// Render and encode the day's files in memory, so none is written unless all succeed.
-fn render_day(snapshot_path: &Path, render_options: &RenderOptions) -> Result<RenderedDay, String> {
+/// Render and encode the day's files in memory, by name, so none is written unless all
+/// succeed. The preview's caption names the behavior, observation date, body, and any
+/// pond that is not the default.
+fn render_day(
+    snapshot_path: &Path,
+    render_options: &RenderOptions,
+) -> Result<[(&'static str, Vec<u8>); 3], String> {
     let RenderOptions {
         koi_body,
         pond_size,
@@ -220,14 +238,11 @@ fn render_day(snapshot_path: &Path, render_options: &RenderOptions) -> Result<Re
         pond_size.width_pixels() * export_scale,
         pond_size.height_pixels() * export_scale,
     );
-    Ok(RenderedDay {
-        caption,
-        output_files: [
-            ("koi.gif", gif_bytes),
-            ("koi.png", png_bytes),
-            ("preview.html", preview_html.into_bytes()),
-        ],
-    })
+    Ok([
+        ("koi.gif", gif_bytes),
+        ("koi.png", png_bytes),
+        ("preview.html", preview_html.into_bytes()),
+    ])
 }
 
 fn parse_body(body_name: &str) -> Option<KoiBody> {
@@ -291,4 +306,30 @@ fn replace_file(output_path: &Path, file_bytes: &[u8]) -> Result<(), String> {
             let _ = fs::remove_file(&temporary_path);
             format!("{}: {write_error}", output_path.display())
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_usage_lists_every_body_the_parser_accepts_and_marks_the_default() {
+        let usage_text = build_usage_text();
+        let body_sentence = usage_text
+            .split_once("BODY is ")
+            .and_then(|(_, sentence_onward)| sentence_onward.split_once('.'))
+            .map(|(body_sentence, _)| body_sentence)
+            .expect("the usage has a sentence listing the bodies");
+        for (body_name, _) in BODY_NAMES {
+            assert!(
+                body_sentence.contains(body_name),
+                "the usage leaves out {body_name}: {body_sentence}"
+            );
+        }
+        let default_name = name_body(KoiBody::default());
+        assert!(
+            body_sentence.contains(&format!("{default_name} (the default)")),
+            "{body_sentence}"
+        );
+    }
 }
