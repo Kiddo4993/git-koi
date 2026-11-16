@@ -6,7 +6,9 @@ use git_koi::koi::{KoiDevelopment, MAX_GROWTH_CONTRIBUTIONS, derive_koi_developm
 use git_koi::motion::{
     calculate_stretched_swim_pose, calculate_swim_pose, frame_count, stretched_frame_count,
 };
-use git_koi::output::{encode_gif_scaled, encode_png_scaled, encode_sized_preview_html};
+use git_koi::output::{
+    ExportScale, encode_gif_scaled, encode_png_scaled, encode_sized_preview_html,
+};
 use git_koi::pond::PondSize;
 use git_koi::render::{KoiFrame, SwimLoop, render_koi, render_koi_in, render_swim_frame};
 
@@ -181,14 +183,15 @@ fn exports_match_the_pond_at_the_chosen_scale() {
             .render_frame(frame_index)
         })
         .collect();
-    for export_scale in [1, 3] {
+    for pixels_per_native_pixel in [1, 3] {
+        let export_scale = ExportScale::new(pixels_per_native_pixel).unwrap();
         let gif_bytes = encode_gif_scaled(&koi_frames, export_scale).unwrap();
         let gif_decoder = gif::DecodeOptions::new()
             .read_info(gif_bytes.as_slice())
             .unwrap();
         assert_eq!(
             [gif_decoder.width(), gif_decoder.height()].map(u32::from),
-            [300 * export_scale, 256 * export_scale]
+            [300 * pixels_per_native_pixel, 256 * pixels_per_native_pixel]
         );
         let png_bytes = encode_png_scaled(&koi_frames[0], export_scale).unwrap();
         let png_reader = png::Decoder::new(std::io::Cursor::new(png_bytes))
@@ -196,7 +199,7 @@ fn exports_match_the_pond_at_the_chosen_scale() {
             .unwrap();
         assert_eq!(
             [png_reader.info().width, png_reader.info().height],
-            [300 * export_scale, 256 * export_scale]
+            [300 * pixels_per_native_pixel, 256 * pixels_per_native_pixel]
         );
     }
     let preview_html = encode_sized_preview_html("caption", 300, 256);

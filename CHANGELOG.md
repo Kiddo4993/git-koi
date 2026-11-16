@@ -15,7 +15,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   round, with loop-the-loops and S-wiggles; a longer track makes a longer loop
   at the same pace. Without the options, every file is drawn exactly as before.
   The Action takes them as the `size` and `scale` inputs, and the library as
-  `pond::PondSize`, `render::SwimLoop`, and the `_scaled` encoders.
+  `pond::PondSize`, `render::SwimLoop`, `output::ExportScale`, and the `_scaled`
+  encoders.
 - The Action runs on Windows runners, downloading and checking the release's
   `.zip` (#36).
 

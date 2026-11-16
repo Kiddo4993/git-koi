@@ -8,7 +8,7 @@ use git_koi::coat::KoiBody;
 use git_koi::history::{AccountSnapshot, ContributionDay};
 use git_koi::koi::{KoiDevelopment, derive_koi_development};
 use git_koi::motion::frame_count;
-use git_koi::output::{encode_gif, encode_gif_scaled, encode_png, encode_png_scaled};
+use git_koi::output::{ExportScale, encode_gif, encode_gif_scaled, encode_png, encode_png_scaled};
 use git_koi::pond::PondSize;
 use git_koi::render::{KoiFrame, SwimLoop, render_koi, render_koi_in, render_swim_frame};
 
@@ -130,13 +130,13 @@ fn the_size_and_scale_options_draw_the_days_pond_in_any_order() {
         .collect();
     assert_eq!(
         fs::read(output_directory.join("koi.gif")).unwrap(),
-        encode_gif_scaled(&swim_frames, 1).unwrap()
+        encode_gif_scaled(&swim_frames, ExportScale::new(1).unwrap()).unwrap()
     );
     assert_eq!(
         fs::read(output_directory.join("koi.png")).unwrap(),
         encode_png_scaled(
             &render_koi_in(pond_size, &koi_development, KoiBody::Asagi),
-            1
+            ExportScale::new(1).unwrap()
         )
         .unwrap()
     );

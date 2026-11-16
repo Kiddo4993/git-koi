@@ -97,11 +97,8 @@ impl FromStr for PondSize {
             .split_once('x')
             .ok_or_else(|| PondSizeError::Malformed(size_text.to_owned()))?;
         let parse_side = |side_text: &str| {
-            if side_text.is_empty() || !side_text.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Err(PondSizeError::Malformed(size_text.to_owned()));
-            }
-            // Too many digits for a u32 is out of range rather than malformed.
-            Ok(side_text.parse().unwrap_or(u32::MAX))
+            parse_whole_number(side_text)
+                .ok_or_else(|| PondSizeError::Malformed(size_text.to_owned()))
         };
         Self::new(parse_side(width_text)?, parse_side(height_text)?)
     }
@@ -143,6 +140,20 @@ impl fmt::Display for PondSizeError {
 }
 
 impl Error for PondSizeError {}
+
+/// Read a whole number written in digits alone, with no sign or spaces; `None` when the
+/// text is not one. Too many digits for a `u32` read as `u32::MAX`, so a range check
+/// reports them as out of range rather than malformed.
+pub(crate) fn parse_whole_number(number_text: &str) -> Option<u32> {
+    if number_text.is_empty()
+        || !number_text
+            .bytes()
+            .all(|number_byte| number_byte.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(number_text.parse().unwrap_or(u32::MAX))
+}
 
 /// About how far a cruising koi swims in one loop of [`crate::motion::frame_count`]
 /// frames; a lap this many times longer lasts that many loops.

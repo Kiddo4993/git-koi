@@ -5,15 +5,17 @@
 //! document of the same pixels, [`encode_gif`] for a behavior's loop, and
 //! [`encode_preview_html`] for a page that shows the GIF and PNG beside it on GitHub's
 //! light and dark page colors. Each export is the size of its frame's pond; the
-//! `_scaled` encoders take another whole-number scale, such as one for a large pond
-//! whose GIF would otherwise be too heavy for phones to play.
+//! `_scaled` encoders take another [`ExportScale`], such as one for a large pond whose
+//! GIF would otherwise be too heavy for phones to play.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+use std::str::FromStr;
 
 use crate::motion::FRAMES_PER_SECOND;
+use crate::pond::parse_whole_number;
 use crate::render::{FRAME_HEIGHT_PIXELS, FRAME_WIDTH_PIXELS, KoiFrame};
 
 /// Each native pixel becomes this many export pixels on each side.
@@ -22,35 +24,91 @@ pub const STATIC_EXPORT_SCALE: u32 = 2;
 pub const STATIC_WIDTH_PIXELS: u32 = FRAME_WIDTH_PIXELS * STATIC_EXPORT_SCALE;
 /// Height of every exported image of the default pond.
 pub const STATIC_HEIGHT_PIXELS: u32 = FRAME_HEIGHT_PIXELS * STATIC_EXPORT_SCALE;
-/// The largest whole-number scale the `_scaled` encoders accept.
-pub const MAX_EXPORT_SCALE: u32 = 4;
+
+/// How many export pixels each native pixel becomes on each side, from
+/// [`ExportScale::MIN`] through [`ExportScale::MAX`]. The default is
+/// [`STATIC_EXPORT_SCALE`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExportScale(u32);
+
+impl ExportScale {
+    /// The smallest scale: one export pixel per native pixel.
+    pub const MIN: u32 = 1;
+    /// The largest scale.
+    pub const MAX: u32 = 4;
+
+    /// A scale of this many export pixels per native pixel on each side, from
+    /// [`Self::MIN`] through [`Self::MAX`].
+    pub fn new(pixels_per_native_pixel: u32) -> Result<Self, ExportScaleError> {
+        if Self::is_within_range(pixels_per_native_pixel) {
+            Ok(Self(pixels_per_native_pixel))
+        } else {
+            Err(ExportScaleError::OutOfRange(pixels_per_native_pixel))
+        }
+    }
+
+    /// Export pixels per native pixel on each side.
+    pub fn pixels_per_native_pixel(self) -> u32 {
+        self.0
+    }
+
+    /// Whether a scale of this many export pixels per native pixel is from
+    /// [`Self::MIN`] through [`Self::MAX`].
+    const fn is_within_range(pixels_per_native_pixel: u32) -> bool {
+        Self::MIN <= pixels_per_native_pixel && pixels_per_native_pixel <= Self::MAX
+    }
+}
+
+// The default must be a scale `ExportScale::new` accepts.
+const _: () = assert!(ExportScale::is_within_range(STATIC_EXPORT_SCALE));
+
+impl Default for ExportScale {
+    fn default() -> Self {
+        Self(STATIC_EXPORT_SCALE)
+    }
+}
+
+/// Read as a whole number, such as `1`.
+impl FromStr for ExportScale {
+    type Err = ExportScaleError;
+
+    fn from_str(scale_text: &str) -> Result<Self, Self::Err> {
+        let pixels_per_native_pixel = parse_whole_number(scale_text)
+            .ok_or_else(|| ExportScaleError::Malformed(scale_text.to_owned()))?;
+        Self::new(pixels_per_native_pixel)
+    }
+}
+
+/// Why an export scale was refused.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExportScaleError {
+    /// The text is not a whole number; carries the text.
+    Malformed(String),
+    /// The scale is below [`ExportScale::MIN`] or above [`ExportScale::MAX`]; carries it.
+    OutOfRange(u32),
+}
 
 /// Encode a static PNG by repeating each native pixel in both dimensions.
 /// Preserve its color and alpha without interpolation, timestamps, I/O, or mutation.
 /// Encoding errors propagate before the caller publishes any resulting bytes.
 pub fn encode_png(koi_frame: &KoiFrame) -> Result<Vec<u8>, png::EncodingError> {
-    encode_png_scaled(koi_frame, STATIC_EXPORT_SCALE)
+    encode_png_scaled(koi_frame, ExportScale::default())
 }
 
-/// Encode a static PNG as `encode_png` does, at a whole-number scale from one through
-/// [`MAX_EXPORT_SCALE`].
-///
-/// # Panics
-///
-/// If the scale is outside that range.
+/// Encode a static PNG as `encode_png` does, at the given export scale.
 pub fn encode_png_scaled(
     koi_frame: &KoiFrame,
-    export_scale: u32,
+    export_scale: ExportScale,
 ) -> Result<Vec<u8>, png::EncodingError> {
-    check_export_scale(export_scale);
+    let pixels_per_native_pixel = export_scale.pixels_per_native_pixel();
     let pond_size = koi_frame.pond_size();
-    let [export_width, export_height] =
-        [pond_size.width_pixels(), pond_size.height_pixels()].map(|side| side * export_scale);
+    let [export_width, export_height] = [pond_size.width_pixels(), pond_size.height_pixels()]
+        .map(|side_pixels| side_pixels * pixels_per_native_pixel);
     let native_pixels = koi_frame.as_rgba_bytes().as_chunks::<4>().0;
     let mut export_pixels = vec![[0; 4]; (export_width * export_height) as usize];
     for (pixel_index, pixel_channels) in export_pixels.iter_mut().enumerate() {
-        let native_x = pixel_index as u32 % export_width / export_scale;
-        let native_y = pixel_index as u32 / export_width / export_scale;
+        let native_x = pixel_index as u32 % export_width / pixels_per_native_pixel;
+        let native_y = pixel_index as u32 / export_width / pixels_per_native_pixel;
         *pixel_channels = native_pixels[(native_y * pond_size.width_pixels() + native_x) as usize];
     }
     let mut png_bytes = Vec::new();
@@ -179,22 +237,21 @@ const GIF_TRANSPARENT_INDEX: u8 = 0;
 ///
 /// If the frames were drawn in ponds of different sizes.
 pub fn encode_gif(koi_frames: &[KoiFrame]) -> Result<Vec<u8>, GifEncodingError> {
-    encode_gif_scaled(koi_frames, STATIC_EXPORT_SCALE)
+    encode_gif_scaled(koi_frames, ExportScale::default())
 }
 
-/// Encode a seamless loop as `encode_gif` does, at a whole-number scale from one
-/// through [`MAX_EXPORT_SCALE`]. A GIF's weight grows with its area and its frame
-/// count, and phones may not play a heavy one, so a scale of one suits large ponds.
+/// Encode a seamless loop as `encode_gif` does, at the given export scale. A GIF's
+/// weight grows with its area and its frame count, and phones may not play a heavy one,
+/// so a scale of one suits large ponds.
 ///
 /// # Panics
 ///
-/// If the scale is outside that range, or the frames were drawn in ponds of different
-/// sizes.
+/// If the frames were drawn in ponds of different sizes.
 pub fn encode_gif_scaled(
     koi_frames: &[KoiFrame],
-    export_scale: u32,
+    export_scale: ExportScale,
 ) -> Result<Vec<u8>, GifEncodingError> {
-    check_export_scale(export_scale);
+    let pixels_per_native_pixel = export_scale.pixels_per_native_pixel();
     let Some(first_frame) = koi_frames.first() else {
         return Err(GifEncodingError::NoFrames);
     };
@@ -208,8 +265,8 @@ pub fn encode_gif_scaled(
     let native_width = pond_size.width_pixels();
     let mut gif_encoder = gif::Encoder::new(
         Vec::new(),
-        (native_width * export_scale) as u16,
-        (pond_size.height_pixels() * export_scale) as u16,
+        (native_width * pixels_per_native_pixel) as u16,
+        (pond_size.height_pixels() * pixels_per_native_pixel) as u16,
         &[],
     )?;
     gif_encoder.set_repeat(gif::Repeat::Infinite)?;
@@ -243,16 +300,17 @@ pub fn encode_gif_scaled(
                 native_indices.push(palette_index);
             }
         }
-        let mut export_indices =
-            Vec::with_capacity(native_indices.len() * (export_scale * export_scale) as usize);
+        let mut export_indices = Vec::with_capacity(
+            native_indices.len() * (pixels_per_native_pixel * pixels_per_native_pixel) as usize,
+        );
         for native_row in native_indices.chunks(box_width as usize) {
             let export_row: Vec<u8> = native_row
                 .iter()
                 .flat_map(|&palette_index| {
-                    std::iter::repeat_n(palette_index, export_scale as usize)
+                    std::iter::repeat_n(palette_index, pixels_per_native_pixel as usize)
                 })
                 .collect();
-            for _ in 0..export_scale {
+            for _ in 0..pixels_per_native_pixel {
                 export_indices.extend_from_slice(&export_row);
             }
         }
@@ -261,10 +319,10 @@ pub fn encode_gif_scaled(
                 - calculate_elapsed_hundredths(frame_index),
             dispose: gif::DisposalMethod::Background,
             transparent: Some(GIF_TRANSPARENT_INDEX),
-            left: (box_left * export_scale) as u16,
-            top: (box_top * export_scale) as u16,
-            width: (box_width * export_scale) as u16,
-            height: (box_height * export_scale) as u16,
+            left: (box_left * pixels_per_native_pixel) as u16,
+            top: (box_top * pixels_per_native_pixel) as u16,
+            width: (box_width * pixels_per_native_pixel) as u16,
+            height: (box_height * pixels_per_native_pixel) as u16,
             palette: Some(palette_channels),
             buffer: Cow::Owned(export_indices),
             ..gif::Frame::default()
@@ -293,13 +351,6 @@ fn find_drawn_box(native_pixels: &[[u8; 4]], native_width: u32) -> [u32; 4] {
     drawn_edges.map_or([0, 0, 1, 1], |[left, top, right, bottom]| {
         [left, top, right + 1 - left, bottom + 1 - top]
     })
-}
-
-fn check_export_scale(export_scale: u32) {
-    assert!(
-        (1..=MAX_EXPORT_SCALE).contains(&export_scale),
-        "export scales run from 1 through {MAX_EXPORT_SCALE}"
-    );
 }
 
 /// Hundredths of a second from the start of the loop to the given frame, rounded.

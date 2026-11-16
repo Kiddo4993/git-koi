@@ -173,7 +173,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 For a pond of another size, prepare the loop once with `render::SwimLoop::new`,
 passing a `pond::PondSize`, then render each of its `frame_count()` frames with
 `render_frame`, the still with `render::render_koi_in`, and encode them with
-`output::encode_gif_scaled` and `output::encode_png_scaled`.
+`output::encode_gif_scaled` and `output::encode_png_scaled` at an
+`output::ExportScale`.
 
 To collect in-process instead of reading a file, call
 `collect::collect_account_snapshot` with `collect::GhCli` and today's UTC date.
