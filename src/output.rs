@@ -88,6 +88,26 @@ pub enum ExportScaleError {
     OutOfRange(u32),
 }
 
+impl fmt::Display for ExportScaleError {
+    fn fmt(&self, output_formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Malformed(scale_text) => write!(
+                output_formatter,
+                "export scale {scale_text:?} is not a whole number written in digits, such as {}",
+                ExportScale::default().pixels_per_native_pixel()
+            ),
+            Self::OutOfRange(pixels_per_native_pixel) => write!(
+                output_formatter,
+                "export scale {pixels_per_native_pixel} is not from {} through {}",
+                ExportScale::MIN,
+                ExportScale::MAX
+            ),
+        }
+    }
+}
+
+impl Error for ExportScaleError {}
+
 /// Encode a static PNG by repeating each native pixel in both dimensions.
 /// Preserve its color and alpha without interpolation, timestamps, I/O, or mutation.
 /// Encoding errors propagate before the caller publishes any resulting bytes.
