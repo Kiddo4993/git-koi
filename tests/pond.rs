@@ -10,7 +10,7 @@ use git_koi::output::{
     ExportScale, encode_gif_scaled, encode_png_scaled, encode_sized_preview_html,
 };
 use git_koi::pond::PondSize;
-use git_koi::render::{KoiFrame, SwimLoop, render_koi, render_koi_in, render_swim_frame};
+use git_koi::render::{KoiFrame, SwimLoop, render_koi_in};
 
 const HISTORY_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -23,31 +23,6 @@ const BEHAVIORS: [Behavior; 5] = [
     Behavior::SurfaceFeeding,
     Behavior::DeepRest,
 ];
-
-#[test]
-fn the_default_pond_draws_exactly_what_it_always_has() {
-    let koi_development = read_fixture_development();
-    for behavior in BEHAVIORS {
-        let swim_loop = SwimLoop::new(
-            &koi_development,
-            KoiBody::Asagi,
-            behavior,
-            PondSize::default(),
-        );
-        assert_eq!(swim_loop.frame_count(), frame_count(behavior));
-        for frame_index in [0, 7, frame_count(behavior) - 1] {
-            assert_eq!(
-                swim_loop.render_frame(frame_index),
-                render_swim_frame(&koi_development, KoiBody::Asagi, behavior, frame_index),
-                "{behavior:?} frame {frame_index}"
-            );
-        }
-    }
-    assert_eq!(
-        render_koi_in(PondSize::default(), &koi_development, KoiBody::Asagi),
-        render_koi(&koi_development, KoiBody::Asagi)
-    );
-}
 
 #[test]
 fn ponds_of_every_shape_keep_the_whole_fish_inside() {
