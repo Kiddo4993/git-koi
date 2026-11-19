@@ -415,55 +415,47 @@ fn draw_figure_eight(random: &mut SplitMix64, half_width: f64, end_radius: f64) 
 }
 
 /// Loop-the-loops or S-wiggles along a straight, up to two or one per FEATURE_SPACING
-/// pixels, whichever is more, each curling either way and spaced so none overlap. A
-/// loop circles back to where it began and a wiggle returns to the straight's line, so
-/// features never change where the track goes.
+/// pixels, whichever is more, each curling either way and spaced so none overlap; the
+/// plain straight when they don't fit.
 fn place_features(random: &mut SplitMix64, straight: f64) -> Vec<TrackMove> {
     const FEATURE_SPACING_PIXELS: f64 = 300.0;
-    const LOOP_SHARE: f64 = 0.55;
-    const MAX_LOOP_RADIUS_PIXELS: f64 = 64.0;
-    const MAX_WIGGLE_RADIUS_PIXELS: f64 = 80.0;
-    const WIGGLE_ANGLE_RANGE_RADIANS: (f64, f64) = (0.5, 1.05);
-    const LOOP_CLEARANCE_PIXELS: f64 = 16.0;
-    const WIGGLE_CLEARANCE_PIXELS: f64 = 8.0;
+    let max_feature_count = ((straight / FEATURE_SPACING_PIXELS) as u64).max(2);
+    let feature_count = random.next() % (max_feature_count + 1);
+    let features: Vec<TrackFeature> = (0..feature_count)
+        .map(|_| TrackFeature::draw(random))
+        .collect();
+    let Some(gaps) = space_features(random, straight, &features) else {
+        return vec![TrackMove::Straight(straight)];
+    };
+    let mut moves = Vec::new();
+    for (feature, &gap) in features.iter().zip(&gaps) {
+        moves.push(TrackMove::Straight(gap));
+        moves.extend(feature.moves());
+    }
+    moves.push(TrackMove::Straight(gaps[features.len()]));
+    moves
+}
+
+/// The straight before, between, and after the features, one more gap than there are
+/// features, each a random share of the length the features leave free; `None` when the
+/// features would overlap or crowd the straight's ends. With no features there is
+/// nothing to space, so nothing is drawn and the one gap is the whole straight.
+fn space_features(
+    random: &mut SplitMix64,
+    straight: f64,
+    features: &[TrackFeature],
+) -> Option<Vec<f64>> {
     // Room left clear at each end of the straight, so features don't crowd turns.
     const END_CLEARANCE_PIXELS: f64 = 12.0;
-    let max_feature_count = ((straight / FEATURE_SPACING_PIXELS) as u64).max(2);
-    let feature_count = (random.next() % (max_feature_count + 1)) as usize;
-    if feature_count == 0 {
-        return vec![TrackMove::Straight(straight)];
+    if features.is_empty() {
+        return Some(vec![straight]);
     }
-    // Each feature: which way it curls, its radius, and a wiggle's angle.
-    let features: Vec<(f64, f64, Option<f64>)> = (0..feature_count)
-        .map(|_| {
-            let spin = if random.chance(0.5) { 1.0 } else { -1.0 };
-            if random.chance(LOOP_SHARE) {
-                let radius = random.uniform(MIN_TURN_RADIUS_PIXELS, MAX_LOOP_RADIUS_PIXELS);
-                (spin, radius, None)
-            } else {
-                let radius = random.uniform(MIN_TURN_RADIUS_PIXELS, MAX_WIGGLE_RADIUS_PIXELS);
-                let angle =
-                    random.uniform(WIGGLE_ANGLE_RANGE_RADIANS.0, WIGGLE_ANGLE_RANGE_RADIANS.1);
-                (spin, radius, Some(angle))
-            }
-        })
-        .collect();
-    // How far along the straight each feature carries the koi, and how much of the
-    // straight it covers.
-    let advances: Vec<f64> = features
-        .iter()
-        .map(|&(_, radius, wiggle)| wiggle.map_or(0.0, |angle| 4.0 * radius * angle.sin()))
-        .collect();
-    let reaches: Vec<f64> = features
-        .iter()
-        .zip(&advances)
-        .map(|(&(_, radius, wiggle), advance)| match wiggle {
-            None => 2.0 * radius + LOOP_CLEARANCE_PIXELS,
-            Some(_) => advance + WIGGLE_CLEARANCE_PIXELS,
-        })
-        .collect();
-    let free = straight - advances.iter().sum::<f64>();
-    let weights: Vec<f64> = (0..=feature_count)
+    let free = straight
+        - features
+            .iter()
+            .map(|feature| feature.advance_pixels())
+            .sum::<f64>();
+    let weights: Vec<f64> = (0..=features.len())
         .map(|_| random.uniform(0.3, 1.3))
         .collect();
     let weight_total: f64 = weights.iter().sum();
@@ -472,37 +464,116 @@ fn place_features(random: &mut SplitMix64, straight: f64) -> Vec<TrackMove> {
         .map(|weight| free * weight / weight_total)
         .collect();
     let mut position = 0.0;
-    let mut spans = Vec::with_capacity(feature_count);
-    for feature_index in 0..feature_count {
-        position += gaps[feature_index];
-        let middle = position + advances[feature_index] / 2.0;
+    let mut spans = Vec::with_capacity(features.len());
+    for (feature, gap) in features.iter().zip(&gaps) {
+        position += gap;
+        let middle = position + feature.advance_pixels() / 2.0;
         spans.push((
-            middle - reaches[feature_index] / 2.0,
-            middle + reaches[feature_index] / 2.0,
+            middle - feature.reach_pixels() / 2.0,
+            middle + feature.reach_pixels() / 2.0,
         ));
-        position += advances[feature_index];
+        position += feature.advance_pixels();
     }
     let fits = free > 0.0
         && spans[0].0 > END_CLEARANCE_PIXELS
-        && spans[feature_count - 1].1 < straight - END_CLEARANCE_PIXELS
+        && spans[spans.len() - 1].1 < straight - END_CLEARANCE_PIXELS
         && spans.windows(2).all(|pair| pair[0].1 < pair[1].0);
-    if !fits {
-        return vec![TrackMove::Straight(straight)];
-    }
-    let mut moves = Vec::new();
-    for (feature_index, &(spin, radius, wiggle)) in features.iter().enumerate() {
-        moves.push(TrackMove::Straight(gaps[feature_index]));
-        match wiggle {
-            None => moves.push(TrackMove::Turn(radius, spin * TAU)),
-            Some(angle) => moves.extend([
-                TrackMove::Turn(radius, spin * angle),
-                TrackMove::Turn(radius, -2.0 * spin * angle),
-                TrackMove::Turn(radius, spin * angle),
-            ]),
+    fits.then_some(gaps)
+}
+
+/// A loop-the-loop or an S-wiggle along a straight. A loop circles back to where it
+/// began and a wiggle returns to the straight's line, so features never change where
+/// the track goes.
+#[derive(Clone, Copy)]
+enum TrackFeature {
+    /// One full turn.
+    Loop {
+        radius_pixels: f64,
+        /// 1.0 to curl clockwise on screen, -1.0 counterclockwise.
+        curl_sign: f64,
+    },
+    /// A turn out by an angle, back across by twice it, and back onto the line by it
+    /// again.
+    Wiggle {
+        radius_pixels: f64,
+        angle_radians: f64,
+        /// 1.0 to curl clockwise on screen first, -1.0 counterclockwise.
+        curl_sign: f64,
+    },
+}
+
+impl TrackFeature {
+    const LOOP_SHARE: f64 = 0.55;
+    const MAX_LOOP_RADIUS_PIXELS: f64 = 64.0;
+    const MAX_WIGGLE_RADIUS_PIXELS: f64 = 80.0;
+    const WIGGLE_ANGLE_RANGE_RADIANS: (f64, f64) = (0.5, 1.05);
+    const LOOP_CLEARANCE_PIXELS: f64 = 16.0;
+    const WIGGLE_CLEARANCE_PIXELS: f64 = 8.0;
+
+    /// Draw a feature: which way it curls, whether it is a loop, then its size.
+    fn draw(random: &mut SplitMix64) -> Self {
+        let curl_sign = if random.chance(0.5) { 1.0 } else { -1.0 };
+        if random.chance(Self::LOOP_SHARE) {
+            let radius_pixels =
+                random.uniform(MIN_TURN_RADIUS_PIXELS, Self::MAX_LOOP_RADIUS_PIXELS);
+            Self::Loop {
+                radius_pixels,
+                curl_sign,
+            }
+        } else {
+            let radius_pixels =
+                random.uniform(MIN_TURN_RADIUS_PIXELS, Self::MAX_WIGGLE_RADIUS_PIXELS);
+            let angle_radians = random.uniform(
+                Self::WIGGLE_ANGLE_RANGE_RADIANS.0,
+                Self::WIGGLE_ANGLE_RANGE_RADIANS.1,
+            );
+            Self::Wiggle {
+                radius_pixels,
+                angle_radians,
+                curl_sign,
+            }
         }
     }
-    moves.push(TrackMove::Straight(gaps[feature_count]));
-    moves
+
+    /// How far along the straight the feature carries the koi: none for a loop.
+    fn advance_pixels(self) -> f64 {
+        match self {
+            Self::Loop { .. } => 0.0,
+            Self::Wiggle {
+                radius_pixels,
+                angle_radians,
+                ..
+            } => 4.0 * radius_pixels * angle_radians.sin(),
+        }
+    }
+
+    /// How much of the straight the feature covers, with room to spare, centered on the
+    /// middle of its advance.
+    fn reach_pixels(self) -> f64 {
+        match self {
+            Self::Loop { radius_pixels, .. } => 2.0 * radius_pixels + Self::LOOP_CLEARANCE_PIXELS,
+            Self::Wiggle { .. } => self.advance_pixels() + Self::WIGGLE_CLEARANCE_PIXELS,
+        }
+    }
+
+    /// The turns that swim the feature.
+    fn moves(self) -> Vec<TrackMove> {
+        match self {
+            Self::Loop {
+                radius_pixels,
+                curl_sign,
+            } => vec![TrackMove::Turn(radius_pixels, curl_sign * TAU)],
+            Self::Wiggle {
+                radius_pixels,
+                angle_radians,
+                curl_sign,
+            } => vec![
+                TrackMove::Turn(radius_pixels, curl_sign * angle_radians),
+                TrackMove::Turn(radius_pixels, -2.0 * curl_sign * angle_radians),
+                TrackMove::Turn(radius_pixels, curl_sign * angle_radians),
+            ],
+        }
+    }
 }
 
 /// Follow the moves from a start point and heading, one pixel or less per point.
