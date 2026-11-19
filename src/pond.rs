@@ -296,29 +296,30 @@ enum TrackMove {
 }
 
 impl LapTrack {
-    /// A track along the pond's long side whose widest turn is `widest_radius`, so the
+    /// A track along the pond's long side whose widest turn is `widest_radius_pixels`, so the
     /// koi keeps the same margin from the long sides as from the short ones. Layouts
     /// that would leave the pond or stray from the koi's pace are drawn again; if none
     /// fits, the track is a plain oval.
-    fn generate(seed: u64, pond_size: PondSize, widest_radius: f64) -> Self {
+    fn generate(seed: u64, pond_size: PondSize, widest_radius_pixels: f64) -> Self {
         let mut random = SplitMix64(seed);
-        let long_side = pond_size.width_pixels.max(pond_size.height_pixels);
-        let half_size = [
-            f64::from(long_side - pond_size.short_side_pixels()) / 2.0 + widest_radius,
-            widest_radius,
+        let long_side_pixels = pond_size.width_pixels.max(pond_size.height_pixels);
+        let half_extent_pixels = [
+            f64::from(long_side_pixels - pond_size.short_side_pixels()) / 2.0
+                + widest_radius_pixels,
+            widest_radius_pixels,
         ];
         let mut chosen_points = None;
         for _ in 0..TRACK_ATTEMPTS {
-            let end_radius = random.uniform(
-                (widest_radius - END_RADIUS_SPREAD_PIXELS).max(MIN_TURN_RADIUS_PIXELS),
-                widest_radius,
+            let end_radius_pixels = random.uniform(
+                (widest_radius_pixels - END_RADIUS_SPREAD_PIXELS).max(MIN_TURN_RADIUS_PIXELS),
+                widest_radius_pixels,
             );
             // A figure-eight needs its lobes apart to cross between them.
-            let has_room_for_eight = half_size[0] - end_radius > end_radius;
+            let has_room_for_eight = half_extent_pixels[0] - end_radius_pixels > end_radius_pixels;
             let track_layout = if random.chance(0.5) || !has_room_for_eight {
-                draw_oval(&mut random, half_size[0], end_radius)
+                draw_oval(&mut random, half_extent_pixels[0], end_radius_pixels)
             } else {
-                draw_figure_eight(&mut random, half_size[0], end_radius)
+                draw_figure_eight(&mut random, half_extent_pixels[0], end_radius_pixels)
             };
             let mut points = trace(&track_layout);
             // Mirroring top to bottom swims the same layout the other way round.
@@ -327,20 +328,26 @@ impl LapTrack {
                     point[1] = -point[1];
                 }
             }
-            let fits = points.iter().all(|point| {
-                (0..2).all(|axis_index| point[axis_index].abs() <= half_size[axis_index] + 0.5)
+            let stays_inside = points.iter().all(|point| {
+                (0..2).all(|axis_index| {
+                    point[axis_index].abs() <= half_extent_pixels[axis_index] + 0.5
+                })
             });
             let eased_points = ease(&points);
             let length_pixels = measure_distances(&eased_points)[eased_points.len() - 1];
-            let pace =
+            let pace_ratio =
                 length_pixels / (LAP_PIXELS_PER_LOOP * f64::from(count_lap_loops(length_pixels)));
-            if fits && (pace - 1.0).abs() <= PACE_TOLERANCE {
+            if stays_inside && (pace_ratio - 1.0).abs() <= PACE_TOLERANCE {
                 chosen_points = Some(eased_points);
                 break;
             }
         }
-        let mut points = chosen_points
-            .unwrap_or_else(|| ease(&trace(&draw_plain_oval(half_size[0], widest_radius))));
+        let mut points = chosen_points.unwrap_or_else(|| {
+            ease(&trace(&draw_plain_oval(
+                half_extent_pixels[0],
+                widest_radius_pixels,
+            )))
+        });
         // A tall pond swims the same layouts along its height.
         if pond_size.height_pixels > pond_size.width_pixels {
             for point in &mut points {
@@ -361,16 +368,20 @@ impl LapTrack {
 
     /// The point this far along the track, wrapping around it either way.
     fn position_at(&self, distance_pixels: f64) -> [f64; 2] {
-        let distance = distance_pixels.rem_euclid(self.length_pixels());
+        let wrapped_distance_pixels = distance_pixels.rem_euclid(self.length_pixels());
         let next_index = self
             .distances
-            .partition_point(|&point_distance| point_distance <= distance)
+            .partition_point(|&point_distance| point_distance <= wrapped_distance_pixels)
             .clamp(1, self.points.len() - 1);
-        let [from, to] = [self.points[next_index - 1], self.points[next_index]];
+        let [from_point, to_point] = [self.points[next_index - 1], self.points[next_index]];
         let [from_distance, to_distance] =
             [self.distances[next_index - 1], self.distances[next_index]];
-        let fraction = (distance - from_distance) / (to_distance - from_distance).max(f64::EPSILON);
-        [0, 1].map(|axis_index| from[axis_index] + (to[axis_index] - from[axis_index]) * fraction)
+        let segment_fraction = (wrapped_distance_pixels - from_distance)
+            / (to_distance - from_distance).max(f64::EPSILON);
+        [0, 1].map(|axis_index| {
+            from_point[axis_index]
+                + (to_point[axis_index] - from_point[axis_index]) * segment_fraction
+        })
     }
 }
 
@@ -378,9 +389,10 @@ impl LapTrack {
 fn measure_distances(points: &[[f64; 2]]) -> Vec<f64> {
     let mut distances = Vec::with_capacity(points.len());
     distances.push(0.0);
-    for pair in points.windows(2) {
-        let step = (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]);
-        distances.push(distances[distances.len() - 1] + step);
+    for point_pair in points.windows(2) {
+        let step_pixels =
+            (point_pair[1][0] - point_pair[0][0]).hypot(point_pair[1][1] - point_pair[0][1]);
+        distances.push(distances[distances.len() - 1] + step_pixels);
     }
     distances
 }
@@ -393,43 +405,47 @@ struct TrackLayout {
 }
 
 /// An oval with no loops or wiggles, swum clockwise from the top left.
-fn draw_plain_oval(half_width: f64, end_radius: f64) -> TrackLayout {
-    let straight = 2.0 * (half_width - end_radius);
+fn draw_plain_oval(half_width_pixels: f64, end_radius_pixels: f64) -> TrackLayout {
+    let straight_pixels = 2.0 * (half_width_pixels - end_radius_pixels);
     let end_turn = TrackMove::Turn {
-        radius_pixels: end_radius,
+        radius_pixels: end_radius_pixels,
         sweep_radians: PI,
     };
     TrackLayout {
         moves: vec![
             TrackMove::Straight {
-                length_pixels: straight,
+                length_pixels: straight_pixels,
             },
             end_turn,
             TrackMove::Straight {
-                length_pixels: straight,
+                length_pixels: straight_pixels,
             },
             end_turn,
         ],
-        start_point: [-straight / 2.0, -end_radius],
+        start_point: [-straight_pixels / 2.0, -end_radius_pixels],
         start_heading_radians: 0.0,
     }
 }
 
 /// An oval swum clockwise from the top left: two straights joined by half turns,
 /// with features along both straights.
-fn draw_oval(random: &mut SplitMix64, half_width: f64, end_radius: f64) -> TrackLayout {
-    let straight = 2.0 * (half_width - end_radius);
+fn draw_oval(
+    random: &mut SplitMix64,
+    half_width_pixels: f64,
+    end_radius_pixels: f64,
+) -> TrackLayout {
+    let straight_pixels = 2.0 * (half_width_pixels - end_radius_pixels);
     let end_turn = TrackMove::Turn {
-        radius_pixels: end_radius,
+        radius_pixels: end_radius_pixels,
         sweep_radians: PI,
     };
-    let mut moves = place_features(random, straight);
+    let mut moves = place_features(random, straight_pixels);
     moves.push(end_turn);
-    moves.extend(place_features(random, straight));
+    moves.extend(place_features(random, straight_pixels));
     moves.push(end_turn);
     TrackLayout {
         moves,
-        start_point: [-straight / 2.0, -end_radius],
+        start_point: [-straight_pixels / 2.0, -end_radius_pixels],
         start_heading_radians: 0.0,
     }
 }
@@ -437,52 +453,59 @@ fn draw_oval(random: &mut SplitMix64, half_width: f64, end_radius: f64) -> Track
 /// A figure-eight from the center, heading down and right: counterclockwise round the
 /// right lobe and clockwise round the left, crossing in the middle, with features
 /// along each half of both crossing lines.
-fn draw_figure_eight(random: &mut SplitMix64, half_width: f64, end_radius: f64) -> TrackLayout {
-    let lobe_offset = half_width - end_radius;
-    let crossing_angle = (end_radius / lobe_offset).asin();
-    let half_crossing = (lobe_offset * lobe_offset - end_radius * end_radius).sqrt();
-    let lobe_sweep = PI + 2.0 * crossing_angle;
-    let mut moves = place_features(random, half_crossing);
+fn draw_figure_eight(
+    random: &mut SplitMix64,
+    half_width_pixels: f64,
+    end_radius_pixels: f64,
+) -> TrackLayout {
+    let lobe_offset_pixels = half_width_pixels - end_radius_pixels;
+    let crossing_angle_radians = (end_radius_pixels / lobe_offset_pixels).asin();
+    let half_crossing_pixels =
+        (lobe_offset_pixels * lobe_offset_pixels - end_radius_pixels * end_radius_pixels).sqrt();
+    let lobe_sweep_radians = PI + 2.0 * crossing_angle_radians;
+    let mut moves = place_features(random, half_crossing_pixels);
     moves.push(TrackMove::Turn {
-        radius_pixels: end_radius,
-        sweep_radians: -lobe_sweep,
+        radius_pixels: end_radius_pixels,
+        sweep_radians: -lobe_sweep_radians,
     });
-    moves.extend(place_features(random, half_crossing));
-    moves.extend(place_features(random, half_crossing));
+    moves.extend(place_features(random, half_crossing_pixels));
+    moves.extend(place_features(random, half_crossing_pixels));
     moves.push(TrackMove::Turn {
-        radius_pixels: end_radius,
-        sweep_radians: lobe_sweep,
+        radius_pixels: end_radius_pixels,
+        sweep_radians: lobe_sweep_radians,
     });
-    moves.extend(place_features(random, half_crossing));
+    moves.extend(place_features(random, half_crossing_pixels));
     TrackLayout {
         moves,
         start_point: [0.0, 0.0],
-        start_heading_radians: crossing_angle,
+        start_heading_radians: crossing_angle_radians,
     }
 }
 
 /// Loop-the-loops or S-wiggles along a straight, up to two or one per FEATURE_SPACING
 /// pixels, whichever is more, each curling either way and spaced so none overlap; the
 /// plain straight when they don't fit.
-fn place_features(random: &mut SplitMix64, straight: f64) -> Vec<TrackMove> {
+fn place_features(random: &mut SplitMix64, straight_pixels: f64) -> Vec<TrackMove> {
     const FEATURE_SPACING_PIXELS: f64 = 300.0;
-    let max_feature_count = ((straight / FEATURE_SPACING_PIXELS) as u64).max(2);
+    let max_feature_count = ((straight_pixels / FEATURE_SPACING_PIXELS) as u64).max(2);
     let feature_count = random.next() % (max_feature_count + 1);
     let features: Vec<TrackFeature> = (0..feature_count)
         .map(|_| TrackFeature::draw(random))
         .collect();
-    let Some(gaps) = space_features(random, straight, &features) else {
+    let Some(gap_lengths_pixels) = space_features(random, straight_pixels, &features) else {
         return vec![TrackMove::Straight {
-            length_pixels: straight,
+            length_pixels: straight_pixels,
         }];
     };
     let mut moves = Vec::new();
-    for (feature, &gap) in features.iter().zip(&gaps) {
-        moves.push(TrackMove::Straight { length_pixels: gap });
+    for (feature, &gap_length_pixels) in features.iter().zip(&gap_lengths_pixels) {
+        moves.push(TrackMove::Straight {
+            length_pixels: gap_length_pixels,
+        });
         moves.extend(feature.moves());
     }
     moves.push(TrackMove::Straight {
-        length_pixels: gaps[features.len()],
+        length_pixels: gap_lengths_pixels[features.len()],
     });
     moves
 }
@@ -493,7 +516,7 @@ fn place_features(random: &mut SplitMix64, straight: f64) -> Vec<TrackMove> {
 /// nothing to space, so nothing is drawn and the one gap is the whole straight.
 fn space_features(
     random: &mut SplitMix64,
-    straight: f64,
+    straight_pixels: f64,
     features: &[TrackFeature],
 ) -> Option<Vec<f64>> {
     // Room left clear at each end of the straight, so features don't crowd turns.
@@ -501,37 +524,39 @@ fn space_features(
     // Every gap gets some straight: the shortest is at least 0.3 / 1.3 of the longest.
     const GAP_WEIGHT_RANGE: (f64, f64) = (0.3, 1.3);
     if features.is_empty() {
-        return Some(vec![straight]);
+        return Some(vec![straight_pixels]);
     }
-    let free = straight
+    let free_length_pixels = straight_pixels
         - features
             .iter()
             .map(|feature| feature.advance_pixels())
             .sum::<f64>();
-    let weights: Vec<f64> = (0..=features.len())
+    let gap_weights: Vec<f64> = (0..=features.len())
         .map(|_| random.uniform(GAP_WEIGHT_RANGE.0, GAP_WEIGHT_RANGE.1))
         .collect();
-    let weight_total: f64 = weights.iter().sum();
-    let gaps: Vec<f64> = weights
+    let gap_weight_total: f64 = gap_weights.iter().sum();
+    let gap_lengths_pixels: Vec<f64> = gap_weights
         .iter()
-        .map(|weight| free * weight / weight_total)
+        .map(|gap_weight| free_length_pixels * gap_weight / gap_weight_total)
         .collect();
-    let mut position = 0.0;
-    let mut spans = Vec::with_capacity(features.len());
-    for (feature, gap) in features.iter().zip(&gaps) {
-        position += gap;
-        let middle = position + feature.advance_pixels() / 2.0;
-        spans.push((
-            middle - feature.reach_pixels() / 2.0,
-            middle + feature.reach_pixels() / 2.0,
-        ));
-        position += feature.advance_pixels();
+    let mut along_pixels = 0.0;
+    let mut feature_spans = Vec::with_capacity(features.len());
+    for (feature, gap_length_pixels) in features.iter().zip(&gap_lengths_pixels) {
+        along_pixels += gap_length_pixels;
+        let middle_pixels = along_pixels + feature.advance_pixels() / 2.0;
+        feature_spans.push(
+            middle_pixels - feature.reach_pixels() / 2.0
+                ..middle_pixels + feature.reach_pixels() / 2.0,
+        );
+        along_pixels += feature.advance_pixels();
     }
-    let fits = free > 0.0
-        && spans[0].0 > END_CLEARANCE_PIXELS
-        && spans[spans.len() - 1].1 < straight - END_CLEARANCE_PIXELS
-        && spans.windows(2).all(|pair| pair[0].1 < pair[1].0);
-    fits.then_some(gaps)
+    let features_fit = free_length_pixels > 0.0
+        && feature_spans[0].start > END_CLEARANCE_PIXELS
+        && feature_spans[feature_spans.len() - 1].end < straight_pixels - END_CLEARANCE_PIXELS
+        && feature_spans
+            .windows(2)
+            .all(|span_pair| span_pair[0].end < span_pair[1].start);
+    features_fit.then_some(gap_lengths_pixels)
 }
 
 /// A loop-the-loop or an S-wiggle along a straight. A loop circles back to where it
@@ -645,39 +670,41 @@ impl TrackFeature {
 /// point.
 fn trace(track_layout: &TrackLayout) -> Vec<[f64; 2]> {
     let mut points = vec![track_layout.start_point];
-    let mut heading = track_layout.start_heading_radians;
+    let mut heading_radians = track_layout.start_heading_radians;
     for &track_move in &track_layout.moves {
         let [x, y] = points[points.len() - 1];
         match track_move {
-            TrackMove::Straight {
-                length_pixels: length,
-            } => {
-                let step_count = length.ceil().max(1.0) as usize;
+            TrackMove::Straight { length_pixels } => {
+                let step_count = length_pixels.ceil().max(1.0) as usize;
                 points.extend((1..=step_count).map(|step_index| {
-                    let along = length * step_index as f64 / step_count as f64;
-                    [x + along * heading.cos(), y + along * heading.sin()]
+                    let along_pixels = length_pixels * step_index as f64 / step_count as f64;
+                    [
+                        x + along_pixels * heading_radians.cos(),
+                        y + along_pixels * heading_radians.sin(),
+                    ]
                 }));
             }
             TrackMove::Turn {
-                radius_pixels: radius,
-                sweep_radians: sweep,
+                radius_pixels,
+                sweep_radians,
             } => {
                 // The center sits on the side the koi turns toward.
-                let side = sweep.signum();
-                let center = [
-                    x - side * radius * heading.sin(),
-                    y + side * radius * heading.cos(),
+                let turn_side_sign = sweep_radians.signum();
+                let center_point = [
+                    x - turn_side_sign * radius_pixels * heading_radians.sin(),
+                    y + turn_side_sign * radius_pixels * heading_radians.cos(),
                 ];
-                let start_angle = heading - side * PI / 2.0;
-                let step_count = (sweep.abs() * radius).ceil().max(1.0) as usize;
+                let start_angle_radians = heading_radians - turn_side_sign * PI / 2.0;
+                let step_count = (sweep_radians.abs() * radius_pixels).ceil().max(1.0) as usize;
                 points.extend((1..=step_count).map(|step_index| {
-                    let angle = start_angle + sweep * step_index as f64 / step_count as f64;
+                    let angle_radians =
+                        start_angle_radians + sweep_radians * step_index as f64 / step_count as f64;
                     [
-                        center[0] + radius * angle.cos(),
-                        center[1] + radius * angle.sin(),
+                        center_point[0] + radius_pixels * angle_radians.cos(),
+                        center_point[1] + radius_pixels * angle_radians.sin(),
                     ]
                 }));
-                heading += sweep;
+                heading_radians += sweep_radians;
             }
         }
     }
@@ -688,31 +715,36 @@ fn trace(track_layout: &TrackLayout) -> Vec<[f64; 2]> {
 /// so each change of turn spreads over EASING_PIXELS instead of snapping. A closed
 /// track stays closed, and its turns tighten only slightly.
 fn ease(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
-    let raw = LapTrack::from_points(points.to_vec());
-    let point_count = raw.length_pixels().round().max(3.0) as usize;
-    let step = raw.length_pixels() / point_count as f64;
-    let even: Vec<[f64; 2]> = (0..point_count)
-        .map(|point_index| raw.position_at(point_index as f64 * step))
+    let traced_track = LapTrack::from_points(points.to_vec());
+    let point_count = traced_track.length_pixels().round().max(3.0) as usize;
+    let spacing_pixels = traced_track.length_pixels() / point_count as f64;
+    let even_points: Vec<[f64; 2]> = (0..point_count)
+        .map(|point_index| traced_track.position_at(point_index as f64 * spacing_pixels))
         .collect();
-    let reach = (3.0 * EASING_PIXELS / step).ceil() as isize;
-    let weights: Vec<f64> = (-reach..=reach)
-        .map(|offset| (-0.5 * (offset as f64 * step / EASING_PIXELS).powi(2)).exp())
-        .collect();
-    let weight_total: f64 = weights.iter().sum();
-    let mut eased: Vec<[f64; 2]> = (0..point_count as isize)
-        .map(|point_index| {
-            let mut sum = [0.0; 2];
-            for (weight, offset) in weights.iter().zip(-reach..=reach) {
-                let neighbor =
-                    even[(point_index + offset).rem_euclid(point_count as isize) as usize];
-                sum[0] += weight * neighbor[0];
-                sum[1] += weight * neighbor[1];
-            }
-            sum.map(|total| total / weight_total)
+    let blur_reach_steps = (3.0 * EASING_PIXELS / spacing_pixels).ceil() as isize;
+    let blur_weights: Vec<f64> = (-blur_reach_steps..=blur_reach_steps)
+        .map(|step_offset| {
+            (-0.5 * (step_offset as f64 * spacing_pixels / EASING_PIXELS).powi(2)).exp()
         })
         .collect();
-    eased.push(eased[0]);
-    eased
+    let blur_weight_total: f64 = blur_weights.iter().sum();
+    let mut eased_points: Vec<[f64; 2]> = (0..point_count as isize)
+        .map(|point_index| {
+            let mut weighted_sum = [0.0; 2];
+            for (blur_weight, step_offset) in blur_weights
+                .iter()
+                .zip(-blur_reach_steps..=blur_reach_steps)
+            {
+                let neighbor_point = even_points
+                    [(point_index + step_offset).rem_euclid(point_count as isize) as usize];
+                weighted_sum[0] += blur_weight * neighbor_point[0];
+                weighted_sum[1] += blur_weight * neighbor_point[1];
+            }
+            weighted_sum.map(|axis_total| axis_total / blur_weight_total)
+        })
+        .collect();
+    eased_points.push(eased_points[0]);
+    eased_points
 }
 
 /// A small, fixed random sequence, so a seed always draws the same track.
