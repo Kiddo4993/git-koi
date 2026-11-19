@@ -268,12 +268,17 @@ const END_RADIUS_SPREAD_PIXELS: f64 = 24.0;
 const EASING_PIXELS: f64 = 10.0;
 const TRACK_ATTEMPTS: u32 = 400;
 
-/// One piece of track: a straight of a length, or a turn of a radius through an angle,
-/// clockwise on screen when positive.
+/// One piece of track: a straight, or a turn along a circle.
 #[derive(Clone, Copy)]
 enum TrackMove {
-    Straight(f64),
-    Turn(f64, f64),
+    Straight {
+        length_pixels: f64,
+    },
+    Turn {
+        radius_pixels: f64,
+        /// Clockwise on screen when positive.
+        sweep_radians: f64,
+    },
 }
 
 impl LapTrack {
@@ -296,12 +301,12 @@ impl LapTrack {
             );
             // A figure-eight needs its lobes apart to cross between them.
             let has_room_for_eight = half_size[0] - end_radius > end_radius;
-            let (moves, start, heading) = if random.chance(0.5) || !has_room_for_eight {
+            let track_layout = if random.chance(0.5) || !has_room_for_eight {
                 draw_oval(&mut random, half_size[0], end_radius)
             } else {
                 draw_figure_eight(&mut random, half_size[0], end_radius)
             };
-            let mut points = trace(&moves, start, heading);
+            let mut points = trace(&track_layout);
             // Mirroring top to bottom swims the same layout the other way round.
             if random.chance(0.5) {
                 for point in &mut points {
@@ -320,10 +325,8 @@ impl LapTrack {
                 break;
             }
         }
-        let mut points = chosen_points.unwrap_or_else(|| {
-            let (moves, start, heading) = draw_plain_oval(half_size[0], widest_radius);
-            ease(&trace(&moves, start, heading))
-        });
+        let mut points = chosen_points
+            .unwrap_or_else(|| ease(&trace(&draw_plain_oval(half_size[0], widest_radius))));
         // A tall pond swims the same layouts along its height.
         if pond_size.height_pixels > pond_size.width_pixels {
             for point in &mut points {
@@ -369,32 +372,52 @@ fn measure_distances(points: &[[f64; 2]]) -> Vec<f64> {
 }
 
 /// The moves of a track, where it starts, and its heading there.
-type TrackLayout = (Vec<TrackMove>, [f64; 2], f64);
+struct TrackLayout {
+    moves: Vec<TrackMove>,
+    start_point: [f64; 2],
+    start_heading_radians: f64,
+}
 
 /// An oval with no loops or wiggles, swum clockwise from the top left.
 fn draw_plain_oval(half_width: f64, end_radius: f64) -> TrackLayout {
     let straight = 2.0 * (half_width - end_radius);
-    (
-        vec![
-            TrackMove::Straight(straight),
-            TrackMove::Turn(end_radius, PI),
-            TrackMove::Straight(straight),
-            TrackMove::Turn(end_radius, PI),
+    let end_turn = TrackMove::Turn {
+        radius_pixels: end_radius,
+        sweep_radians: PI,
+    };
+    TrackLayout {
+        moves: vec![
+            TrackMove::Straight {
+                length_pixels: straight,
+            },
+            end_turn,
+            TrackMove::Straight {
+                length_pixels: straight,
+            },
+            end_turn,
         ],
-        [-straight / 2.0, -end_radius],
-        0.0,
-    )
+        start_point: [-straight / 2.0, -end_radius],
+        start_heading_radians: 0.0,
+    }
 }
 
 /// An oval swum clockwise from the top left: two straights joined by half turns,
 /// with features along both straights.
 fn draw_oval(random: &mut SplitMix64, half_width: f64, end_radius: f64) -> TrackLayout {
     let straight = 2.0 * (half_width - end_radius);
+    let end_turn = TrackMove::Turn {
+        radius_pixels: end_radius,
+        sweep_radians: PI,
+    };
     let mut moves = place_features(random, straight);
-    moves.push(TrackMove::Turn(end_radius, PI));
+    moves.push(end_turn);
     moves.extend(place_features(random, straight));
-    moves.push(TrackMove::Turn(end_radius, PI));
-    (moves, [-straight / 2.0, -end_radius], 0.0)
+    moves.push(end_turn);
+    TrackLayout {
+        moves,
+        start_point: [-straight / 2.0, -end_radius],
+        start_heading_radians: 0.0,
+    }
 }
 
 /// A figure-eight from the center, heading down and right: counterclockwise round the
@@ -406,12 +429,22 @@ fn draw_figure_eight(random: &mut SplitMix64, half_width: f64, end_radius: f64) 
     let half_crossing = (lobe_offset * lobe_offset - end_radius * end_radius).sqrt();
     let lobe_sweep = PI + 2.0 * crossing_angle;
     let mut moves = place_features(random, half_crossing);
-    moves.push(TrackMove::Turn(end_radius, -lobe_sweep));
+    moves.push(TrackMove::Turn {
+        radius_pixels: end_radius,
+        sweep_radians: -lobe_sweep,
+    });
     moves.extend(place_features(random, half_crossing));
     moves.extend(place_features(random, half_crossing));
-    moves.push(TrackMove::Turn(end_radius, lobe_sweep));
+    moves.push(TrackMove::Turn {
+        radius_pixels: end_radius,
+        sweep_radians: lobe_sweep,
+    });
     moves.extend(place_features(random, half_crossing));
-    (moves, [0.0, 0.0], crossing_angle)
+    TrackLayout {
+        moves,
+        start_point: [0.0, 0.0],
+        start_heading_radians: crossing_angle,
+    }
 }
 
 /// Loop-the-loops or S-wiggles along a straight, up to two or one per FEATURE_SPACING
@@ -425,14 +458,18 @@ fn place_features(random: &mut SplitMix64, straight: f64) -> Vec<TrackMove> {
         .map(|_| TrackFeature::draw(random))
         .collect();
     let Some(gaps) = space_features(random, straight, &features) else {
-        return vec![TrackMove::Straight(straight)];
+        return vec![TrackMove::Straight {
+            length_pixels: straight,
+        }];
     };
     let mut moves = Vec::new();
     for (feature, &gap) in features.iter().zip(&gaps) {
-        moves.push(TrackMove::Straight(gap));
+        moves.push(TrackMove::Straight { length_pixels: gap });
         moves.extend(feature.moves());
     }
-    moves.push(TrackMove::Straight(gaps[features.len()]));
+    moves.push(TrackMove::Straight {
+        length_pixels: gaps[features.len()],
+    });
     moves
 }
 
@@ -562,35 +599,53 @@ impl TrackFeature {
             Self::Loop {
                 radius_pixels,
                 curl_sign,
-            } => vec![TrackMove::Turn(radius_pixels, curl_sign * TAU)],
+            } => vec![TrackMove::Turn {
+                radius_pixels,
+                sweep_radians: curl_sign * TAU,
+            }],
             Self::Wiggle {
                 radius_pixels,
                 angle_radians,
                 curl_sign,
             } => vec![
-                TrackMove::Turn(radius_pixels, curl_sign * angle_radians),
-                TrackMove::Turn(radius_pixels, -2.0 * curl_sign * angle_radians),
-                TrackMove::Turn(radius_pixels, curl_sign * angle_radians),
+                TrackMove::Turn {
+                    radius_pixels,
+                    sweep_radians: curl_sign * angle_radians,
+                },
+                TrackMove::Turn {
+                    radius_pixels,
+                    sweep_radians: -2.0 * curl_sign * angle_radians,
+                },
+                TrackMove::Turn {
+                    radius_pixels,
+                    sweep_radians: curl_sign * angle_radians,
+                },
             ],
         }
     }
 }
 
-/// Follow the moves from a start point and heading, one pixel or less per point.
-fn trace(moves: &[TrackMove], start: [f64; 2], start_heading: f64) -> Vec<[f64; 2]> {
-    let mut points = vec![start];
-    let mut heading = start_heading;
-    for &track_move in moves {
+/// Follow a layout's moves from its start point and heading, one pixel or less per
+/// point.
+fn trace(track_layout: &TrackLayout) -> Vec<[f64; 2]> {
+    let mut points = vec![track_layout.start_point];
+    let mut heading = track_layout.start_heading_radians;
+    for &track_move in &track_layout.moves {
         let [x, y] = points[points.len() - 1];
         match track_move {
-            TrackMove::Straight(length) => {
+            TrackMove::Straight {
+                length_pixels: length,
+            } => {
                 let step_count = length.ceil().max(1.0) as usize;
                 points.extend((1..=step_count).map(|step_index| {
                     let along = length * step_index as f64 / step_count as f64;
                     [x + along * heading.cos(), y + along * heading.sin()]
                 }));
             }
-            TrackMove::Turn(radius, sweep) => {
+            TrackMove::Turn {
+                radius_pixels: radius,
+                sweep_radians: sweep,
+            } => {
                 // The center sits on the side the koi turns toward.
                 let side = sweep.signum();
                 let center = [
