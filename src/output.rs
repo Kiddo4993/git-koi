@@ -35,7 +35,7 @@ impl ExportScale {
     /// The smallest scale: one export pixel per native pixel.
     pub const MIN: u32 = 1;
     /// The largest scale. Frames are scaled one at a time as they are encoded, so the
-    /// scale adds little memory; at 4 the largest pond's GIF is 8192 pixels wide.
+    /// scale adds little memory.
     pub const MAX: u32 = 4;
 
     /// A scale of this many export pixels per native pixel on each side, from

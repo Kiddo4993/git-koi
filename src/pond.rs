@@ -27,13 +27,12 @@ pub struct PondSize {
 }
 
 impl PondSize {
-    /// The shortest side a pond may have: the default canvas, the one the koi is drawn
-    /// for. In a smaller square a grown koi at rest reaches past the edge, and below 224
-    /// pixels a swimming one does too.
+    /// The shortest side a pond may have: the default canvas, the one the koi is
+    /// drawn for. In a smaller pond a grown koi reaches past the edge.
     pub const MIN_SIDE_PIXELS: u32 = FRAME_WIDTH_PIXELS;
-    /// The largest area a pond may have, 2048 by 256. Rendering holds every frame of the
-    /// loop at once, about frames × area × 4 bytes, and a longer pond swims a longer
-    /// loop, so at this area the longest loop needs about 2.5 GB.
+    /// The largest area a pond may have. Rendering holds every frame of the loop at
+    /// once, about frames × area × 4 bytes, and a longer pond swims a longer loop, so
+    /// the area is capped until frames are streamed into the encoder.
     pub const MAX_AREA_PIXELS: u32 = 2048 * 256;
     /// The longest side a pond may have: the largest area at the shortest side.
     pub const MAX_SIDE_PIXELS: u32 = Self::MAX_AREA_PIXELS / Self::MIN_SIDE_PIXELS;
@@ -142,8 +141,9 @@ impl fmt::Display for PondSizeError {
             } => write!(
                 output_formatter,
                 "pond size {width_pixels}x{height_pixels} needs each side at least {} pixels \
-                 and the area at most {}x{}",
+                 and an area of at most {} pixels, as in {}x{}",
                 PondSize::MIN_SIDE_PIXELS,
+                PondSize::MAX_AREA_PIXELS,
                 PondSize::MAX_SIDE_PIXELS,
                 PondSize::MIN_SIDE_PIXELS
             ),
@@ -278,8 +278,8 @@ const MIN_TURN_RADIUS_PIXELS: f64 = 48.0;
 const END_RADIUS_SPREAD_PIXELS: f64 = 24.0;
 /// How far easing spreads each change of turn along the track.
 const EASING_PIXELS: f64 = 10.0;
-/// How many layouts to draw before settling for the plain oval. The thinnest pond
-/// allowed, 2048 by 256, needed at most 96 in 1,000 tracks.
+/// How many layouts to draw before settling for the plain oval: enough that even the
+/// thinnest pond allowed rarely settles for it.
 const TRACK_ATTEMPTS: u32 = 400;
 
 /// One piece of track: a straight, or a turn along a circle.
@@ -296,10 +296,10 @@ enum TrackMove {
 }
 
 impl LapTrack {
-    /// A track along the pond's long side whose widest turn is `widest_radius_pixels`, so the
-    /// koi keeps the same margin from the long sides as from the short ones. Layouts
-    /// that would leave the pond or stray from the koi's pace are drawn again; if none
-    /// fits, the track is a plain oval.
+    /// A track along the pond's long side whose widest turn is `widest_radius_pixels`,
+    /// so the koi keeps the same margin from the long sides as from the short ones.
+    /// Layouts that would leave the pond or stray from the koi's pace are drawn again;
+    /// if none fits, the track is a plain oval.
     fn generate(seed: u64, pond_size: PondSize, widest_radius_pixels: f64) -> Self {
         let mut random = SplitMix64(seed);
         let long_side_pixels = pond_size.width_pixels.max(pond_size.height_pixels);
@@ -843,15 +843,35 @@ mod tests {
                 "{malformed:?}"
             );
         }
-        assert!(PondSize::new(2048, 256).is_ok() && PondSize::new(1024, 512).is_ok());
-        for out_of_range in ["255x256", "2049x256", "1024x1024", "99999999999x256"] {
+        let shortest_side = PondSize::MIN_SIDE_PIXELS;
+        let longest_side = PondSize::MAX_SIDE_PIXELS;
+        let widest_square_side = f64::from(PondSize::MAX_AREA_PIXELS).sqrt() as u32;
+        for (width_pixels, height_pixels) in [
+            (longest_side, shortest_side),
+            (shortest_side, longest_side),
+            (widest_square_side, widest_square_side),
+        ] {
             assert!(
-                matches!(
-                    out_of_range.parse::<PondSize>(),
-                    Err(PondSizeError::OutOfRange { .. })
-                ),
-                "{out_of_range:?}"
+                PondSize::new(width_pixels, height_pixels).is_ok(),
+                "{width_pixels}x{height_pixels}"
             );
         }
+        for (width_pixels, height_pixels) in [
+            (shortest_side - 1, shortest_side),
+            (longest_side + 1, shortest_side),
+            (widest_square_side + 1, widest_square_side + 1),
+        ] {
+            assert!(
+                matches!(
+                    PondSize::new(width_pixels, height_pixels),
+                    Err(PondSizeError::OutOfRange { .. })
+                ),
+                "{width_pixels}x{height_pixels}"
+            );
+        }
+        assert!(matches!(
+            "99999999999x256".parse::<PondSize>(),
+            Err(PondSizeError::OutOfRange { .. })
+        ));
     }
 }

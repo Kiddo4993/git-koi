@@ -33,11 +33,12 @@ Requires an authenticated GitHub CLI; in GitHub Actions, set GH_TOKEN to github.
 Render a collected SNAPSHOT into DIR: koi.gif swims the behavior chosen for its
 observation date, koi.png is the still koi, and preview.html shows both on light and
 dark backgrounds. BODY is {body_names}.
-The pond is {default_pond_size} native pixels unless --size gives another, each side at least {min_side_pixels}
-and the area at most {max_side_pixels}x{min_side_pixels}; in a pond that is not square the koi swims a new track each day, and a
-longer track makes a longer loop. Each native pixel becomes N pixels on each side, {default_export_scale}
-unless --scale gives {min_export_scale} through {max_export_scale}. A GIF's weight grows with its area and length, and
-phones may not play a heavy one: for a wide pond, try --size 768x256 --scale 1.
+The pond is {default_pond_size} native pixels unless --size gives another, each side at least
+{min_side_pixels} and its area at most {max_area_pixels} pixels, as in {max_side_pixels}x{min_side_pixels}; in a pond that is not
+square the koi swims a new track each day, and a longer track makes a longer loop. Each
+native pixel becomes N pixels on each side, {default_export_scale} unless --scale gives {min_export_scale} through {max_export_scale}. A
+GIF's weight grows with its area and length, and phones may not play a heavy one: for a
+wide pond, try --size 768x256 --scale 1.
 The options may come in any order. The files are replaced only after all of them render.
 Render prints nothing on success; errors go to stderr and exit 1; invalid usage exits 2.
 Examples: git-koi collect octocat --output snapshot.json
@@ -46,6 +47,7 @@ Examples: git-koi collect octocat --output snapshot.json
         default_pond_size = PondSize::default(),
         min_side_pixels = PondSize::MIN_SIDE_PIXELS,
         max_side_pixels = PondSize::MAX_SIDE_PIXELS,
+        max_area_pixels = PondSize::MAX_AREA_PIXELS,
         default_export_scale = ExportScale::default().pixels_per_native_pixel(),
         min_export_scale = ExportScale::MIN,
         max_export_scale = ExportScale::MAX,
