@@ -27,16 +27,26 @@ pub struct PondSize {
 }
 
 impl PondSize {
-    /// The shortest side a pond may have: room for the longest koi to turn.
-    pub const MIN_SIDE_PIXELS: u32 = 256;
-    /// The longest side a pond may have.
-    pub const MAX_SIDE_PIXELS: u32 = 4096;
+    /// The shortest side a pond may have: the default canvas, the one the koi is drawn
+    /// for. In a smaller square a grown koi at rest reaches past the edge, and below 224
+    /// pixels a swimming one does too.
+    pub const MIN_SIDE_PIXELS: u32 = FRAME_WIDTH_PIXELS;
+    /// The largest area a pond may have, 2048 by 256. Rendering holds every frame of the
+    /// loop at once, about frames × area × 4 bytes, and a longer pond swims a longer
+    /// loop, so at this area the longest loop needs about 2.5 GB.
+    pub const MAX_AREA_PIXELS: u32 = 2048 * 256;
+    /// The longest side a pond may have: the largest area at the shortest side.
+    pub const MAX_SIDE_PIXELS: u32 = Self::MAX_AREA_PIXELS / Self::MIN_SIDE_PIXELS;
 
-    /// A pond of this many native pixels across and down, each from
-    /// [`Self::MIN_SIDE_PIXELS`] through [`Self::MAX_SIDE_PIXELS`].
+    /// A pond of this many native pixels across and down, each side at least
+    /// [`Self::MIN_SIDE_PIXELS`] and the area at most [`Self::MAX_AREA_PIXELS`], so no
+    /// side is longer than [`Self::MAX_SIDE_PIXELS`].
     pub fn new(width_pixels: u32, height_pixels: u32) -> Result<Self, PondSizeError> {
-        let side_range = Self::MIN_SIDE_PIXELS..=Self::MAX_SIDE_PIXELS;
-        if side_range.contains(&width_pixels) && side_range.contains(&height_pixels) {
+        let area_pixels = u64::from(width_pixels) * u64::from(height_pixels);
+        if width_pixels >= Self::MIN_SIDE_PIXELS
+            && height_pixels >= Self::MIN_SIDE_PIXELS
+            && area_pixels <= u64::from(Self::MAX_AREA_PIXELS)
+        {
             Ok(Self {
                 width_pixels,
                 height_pixels,
@@ -109,8 +119,8 @@ impl FromStr for PondSize {
 pub enum PondSizeError {
     /// The text is not `WIDTHxHEIGHT` in whole pixels; carries the text.
     Malformed(String),
-    /// A side is shorter than [`PondSize::MIN_SIDE_PIXELS`] or longer than
-    /// [`PondSize::MAX_SIDE_PIXELS`].
+    /// A side is shorter than [`PondSize::MIN_SIDE_PIXELS`], or the area is larger than
+    /// [`PondSize::MAX_AREA_PIXELS`].
     OutOfRange {
         /// The width asked for.
         width_pixels: u32,
@@ -131,9 +141,11 @@ impl fmt::Display for PondSizeError {
                 height_pixels,
             } => write!(
                 output_formatter,
-                "pond size {width_pixels}x{height_pixels} needs each side from {} through {} pixels",
+                "pond size {width_pixels}x{height_pixels} needs each side at least {} pixels \
+                 and the area at most {}x{}",
                 PondSize::MIN_SIDE_PIXELS,
-                PondSize::MAX_SIDE_PIXELS
+                PondSize::MAX_SIDE_PIXELS,
+                PondSize::MIN_SIDE_PIXELS
             ),
         }
     }
@@ -266,6 +278,8 @@ const MIN_TURN_RADIUS_PIXELS: f64 = 48.0;
 const END_RADIUS_SPREAD_PIXELS: f64 = 24.0;
 /// How far easing spreads each change of turn along the track.
 const EASING_PIXELS: f64 = 10.0;
+/// How many layouts to draw before settling for the plain oval. The thinnest pond
+/// allowed, 2048 by 256, needed at most 96 in 1,000 tracks.
 const TRACK_ATTEMPTS: u32 = 400;
 
 /// One piece of track: a straight, or a turn along a circle.
@@ -484,6 +498,8 @@ fn space_features(
 ) -> Option<Vec<f64>> {
     // Room left clear at each end of the straight, so features don't crowd turns.
     const END_CLEARANCE_PIXELS: f64 = 12.0;
+    // Every gap gets some straight: the shortest is at least 0.3 / 1.3 of the longest.
+    const GAP_WEIGHT_RANGE: (f64, f64) = (0.3, 1.3);
     if features.is_empty() {
         return Some(vec![straight]);
     }
@@ -493,7 +509,7 @@ fn space_features(
             .map(|feature| feature.advance_pixels())
             .sum::<f64>();
     let weights: Vec<f64> = (0..=features.len())
-        .map(|_| random.uniform(0.3, 1.3))
+        .map(|_| random.uniform(GAP_WEIGHT_RANGE.0, GAP_WEIGHT_RANGE.1))
         .collect();
     let weight_total: f64 = weights.iter().sum();
     let gaps: Vec<f64> = weights
@@ -745,7 +761,7 @@ mod tests {
             (PondSize::new(768, 256).unwrap(), 130.0),
             (PondSize::new(300, 256).unwrap(), 90.0),
             (PondSize::new(256, 900).unwrap(), 90.0),
-            (PondSize::new(2000, 600).unwrap(), 40.0),
+            (PondSize::new(1024, 512).unwrap(), 40.0),
         ] {
             let widest_radius = calculate_lap_radius(body_length_pixels, pond_size);
             let half_size =
@@ -795,7 +811,8 @@ mod tests {
                 "{malformed:?}"
             );
         }
-        for out_of_range in ["255x256", "256x4097", "99999999999x256"] {
+        assert!(PondSize::new(2048, 256).is_ok() && PondSize::new(1024, 512).is_ok());
+        for out_of_range in ["255x256", "2049x256", "1024x1024", "99999999999x256"] {
             assert!(
                 matches!(
                     out_of_range.parse::<PondSize>(),

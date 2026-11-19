@@ -15,8 +15,9 @@ inputs:
     default: white
   size:
     description:
-      Pond size in native pixels as WIDTHxHEIGHT, each side from 256 through
-      4096. A pond that is not square swims a new track each day.
+      Pond size in native pixels as WIDTHxHEIGHT, each side at least 256 and the
+      area at most 2048x256. A pond that is not square swims a new track each
+      day.
     default: 256x256
   scale:
     description:

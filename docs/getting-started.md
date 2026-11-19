@@ -83,8 +83,8 @@ way round, with loop-the-loops and S-wiggles that curl either way. A longer
 track makes a longer loop at the same pace, eight seconds per lap of about 600
 native pixels. A GIF's weight grows with its area and its length, and GitHub's
 mobile app may not play a heavy one, so a wide pond is best exported at
-`scale: 1`; the README stretches it to fit. Each side runs from 256 through 4096
-native pixels.
+`scale: 1`; the README stretches it to fit. Each side is at least 256 native
+pixels, and the area at most 2048 by 256.
 
 GitHub pauses scheduled workflows in a public repository after 60 days without
 activity such as a push. A koi that stops changing during a long quiet stretch

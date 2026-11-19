@@ -15,7 +15,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use crate::motion::FRAMES_PER_SECOND;
-use crate::pond::parse_whole_number;
+use crate::pond::{PondSize, parse_whole_number};
 use crate::render::{FRAME_HEIGHT_PIXELS, FRAME_WIDTH_PIXELS, KoiFrame};
 
 /// Each native pixel becomes this many export pixels on each side.
@@ -34,7 +34,8 @@ pub struct ExportScale(u32);
 impl ExportScale {
     /// The smallest scale: one export pixel per native pixel.
     pub const MIN: u32 = 1;
-    /// The largest scale.
+    /// The largest scale. Frames are scaled one at a time as they are encoded, so the
+    /// scale adds little memory; at 4 the largest pond's GIF is 8192 pixels wide.
     pub const MAX: u32 = 4;
 
     /// A scale of this many export pixels per native pixel on each side, from
@@ -61,6 +62,8 @@ impl ExportScale {
 
 // The default must be a scale `ExportScale::new` accepts.
 const _: () = assert!(ExportScale::is_within_range(STATIC_EXPORT_SCALE));
+// A GIF stores each side in 16 bits, so the largest pond at the largest scale must fit.
+const _: () = assert!(PondSize::MAX_SIDE_PIXELS * ExportScale::MAX <= u16::MAX as u32);
 
 impl Default for ExportScale {
     fn default() -> Self {
